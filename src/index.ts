@@ -28,6 +28,11 @@ async function main() {
     const enableHttps = process.env.ENABLE_HTTPS === 'true';
     const httpsKeyPath = process.env.HTTPS_KEY_PATH;
     const httpsCertPath = process.env.HTTPS_CERT_PATH;
+    const oauthPasscode = process.env.MCP_OAUTH_PASSCODE;
+    // PUBLIC_URL is the externally-reachable origin (e.g. https://hevy-mcp-production-xxxx.up.railway.app).
+    // On Railway, derive from RAILWAY_PUBLIC_DOMAIN if not set explicitly.
+    const publicUrl = process.env.PUBLIC_URL
+      || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : undefined);
 
     // Validate required configuration
     if (!apiKey) {
@@ -63,6 +68,8 @@ async function main() {
         enableHttps,
         httpsKeyPath,
         httpsCertPath,
+        publicUrl,
+        oauthPasscode,
       });
     }
 

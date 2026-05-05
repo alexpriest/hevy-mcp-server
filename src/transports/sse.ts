@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import helmet from 'helmet';
@@ -8,6 +8,7 @@ import { createServer as createHttpServer } from 'http';
 import { readFileSync } from 'fs';
 import { secureCompare, sanitizeErrorMessage } from '../utils/security.js';
 import { logger } from '../utils/logger.js';
+import { mountMcpOAuth } from '../oauth/mcpOAuth.js';
 
 export interface SSETransportConfig {
   port: number;
@@ -19,6 +20,10 @@ export interface SSETransportConfig {
   enableHttps?: boolean;
   httpsKeyPath?: string;
   httpsCertPath?: string;
+  /** Public origin (https://...) used for OAuth issuer/resource URLs. */
+  publicUrl?: string;
+  /** Passcode that gates the OAuth approval page. If set, OAuth is enabled. */
+  oauthPasscode?: string;
 }
 
 interface Session {
@@ -171,30 +176,44 @@ export function createSSETransport(
     next();
   };
 
-  // Authentication middleware with constant-time comparison
-  if (config.authToken) {
-    app.use((req, res, next) => {
-      // Skip auth for health check
-      if (req.path === '/health') {
+  // OAuth 2.1 layer for claude.ai custom connectors.
+  // Mounts /.well-known/*, /authorize, /token, /register, /approve at the app root.
+  let requireOAuthBearer: RequestHandler | null = null;
+  if (config.oauthPasscode && config.publicUrl) {
+    const { requireBearer } = mountMcpOAuth(app, {
+      publicUrl: new URL(config.publicUrl),
+      resourcePath: config.ssePath,
+      passcode: config.oauthPasscode,
+      resourceName: 'Hevy MCP',
+      scopesSupported: ['mcp'],
+    });
+    requireOAuthBearer = requireBearer;
+    logger.info('OAuth 2.1 enabled', { resourcePath: config.ssePath });
+  }
+
+  // Auth middleware for the MCP resource endpoints. Accepts either:
+  //  1. OAuth Bearer token issued by our /token endpoint (claude.ai flow), OR
+  //  2. The legacy static AUTH_TOKEN (existing local Claude Code config).
+  // If neither AUTH_TOKEN nor MCP_OAUTH_PASSCODE is configured, the endpoint
+  // is open (matches the original unprotected behavior).
+  const authConfigured = !!config.authToken || !!requireOAuthBearer;
+  const authResource: RequestHandler = (req, res, next) => {
+    if (!authConfigured) return next();
+    authLimiter(req, res, () => {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.replace(/^Bearer\s+/i, '');
+
+      if (token && config.authToken && secureCompare(token, config.authToken)) {
+        logger.authAttempt(true, req.ip, req.headers['mcp-session-id'] as string);
         return next();
       }
-
-      // Apply auth rate limiting
-      authLimiter(req, res, () => {
-        const authHeader = req.headers.authorization;
-        const token = authHeader?.replace('Bearer ', '');
-
-        if (!token || !secureCompare(token, config.authToken!)) {
-          logger.authFailure('invalid_token', req.ip);
-          res.status(401).json({ error: 'Unauthorized' });
-          return;
-        }
-
-        logger.authAttempt(true, req.ip, req.headers['mcp-session-id'] as string);
-        next();
-      });
+      if (requireOAuthBearer) {
+        return requireOAuthBearer(req, res, next);
+      }
+      logger.authFailure('invalid_token', req.ip);
+      res.status(401).json({ error: 'Unauthorized' });
     });
-  }
+  };
 
   // Session management middleware
   app.use(validateSession);
@@ -209,7 +228,7 @@ export function createSSETransport(
   });
 
   // SSE endpoint
-  app.get(config.ssePath, async (req: Request, res: Response) => {
+  app.get(config.ssePath, authResource, async (req: Request, res: Response) => {
     const sessionId = (req.headers['mcp-session-id'] as string) || generateSessionId();
 
     logger.info('SSE connection established', { sessionId, ip: req.ip });
@@ -266,7 +285,7 @@ export function createSSETransport(
   });
 
   // POST endpoint for messages
-  app.post(config.ssePath, async (req: Request, res: Response) => {
+  app.post(config.ssePath, authResource, async (req: Request, res: Response) => {
     try {
       // Get sessionId from header (preferred) or query parameter (backward compatibility)
       const sessionId =
