@@ -1,11 +1,10 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { HevyClient } from '../hevy/client.js';
 import { handleToolError } from '../utils/errors.js';
 import { formatExerciseTemplate, formatExerciseTemplateList } from '../utils/formatters.js';
 import {
   PaginationParamsSchema,
-  ExerciseProgressParamsSchema,
+  ExerciseHistoryParamsSchema,
+  CreateCustomExerciseInputSchema,
   safeValidateInput,
 } from '../utils/validators.js';
 
@@ -15,18 +14,18 @@ export function getExerciseTools() {
     {
       name: 'get-exercise-templates',
       description:
-        'Browse available exercise templates including both standard and custom exercises. Use this to find exercise IDs for creating workouts and routines.',
+        'Browse available exercise templates including both standard Hevy exercises and any custom exercises on your account. Use this to find exercise template IDs (e.g. "D04AC939") needed for creating workouts and routines. Paginated; iterate pages to enumerate the full library.',
       inputSchema: {
         type: 'object',
         properties: {
           page: {
             type: 'number',
-            description: 'Page number for pagination (default: 0)',
-            default: 0,
+            description: 'Page number, 1-indexed (default: 1)',
+            default: 1,
           },
           pageSize: {
             type: 'number',
-            description: 'Number of exercises per page (default: 50, max: 100)',
+            description: 'Number of templates per page (default: 50, max: 100)',
             default: 50,
           },
         },
@@ -35,56 +34,138 @@ export function getExerciseTools() {
     {
       name: 'get-exercise-template',
       description:
-        'Get detailed information about a specific exercise template by ID. Returns exercise name, muscle groups, equipment, and movement pattern.',
+        'Get full details for a single exercise template by ID. Returns title, primary/secondary muscle groups, equipment, exercise type, and whether it is a custom exercise.',
       inputSchema: {
         type: 'object',
         properties: {
           id: {
             type: 'string',
-            description: 'The unique exercise template ID',
+            description: 'The exercise template ID (e.g. "D04AC939")',
           },
         },
         required: ['id'],
       },
     },
     {
-      name: 'get-exercise-progress',
+      name: 'create-exercise-template',
       description:
-        'Track progress for a specific exercise over time. Returns historical data showing sets, weights, and reps for each workout.',
+        'Create a new custom exercise template on the authenticated account. Custom exercises appear in the user\'s template library and can be used in workouts and routines. Note: Hevy enforces a per-account custom exercise limit; the API returns 403 "exceeds-custom-exercise-limit" when reached. Custom templates created via the API cannot currently be edited or deleted via the API; they must be managed in the Hevy app.',
       inputSchema: {
         type: 'object',
         properties: {
-          exercise_template_id: {
+          title: {
             type: 'string',
-            description: 'The exercise template ID to track',
+            description: 'Display title of the exercise (e.g. "Cable Tricep Pushdown")',
           },
-          start_date: {
+          exercise_type: {
             type: 'string',
-            description: 'ISO 8601 date string (YYYY-MM-DD) for start of date range',
+            enum: [
+              'weight_reps',
+              'reps_only',
+              'bodyweight_reps',
+              'bodyweight_assisted_reps',
+              'duration',
+              'weight_duration',
+              'distance_duration',
+              'short_distance_weight',
+            ],
+            description:
+              'How sets are measured. weight_reps = weight + reps; reps_only = reps; bodyweight_reps = bodyweight reps; bodyweight_assisted_reps = assisted bodyweight (e.g. assisted pull-ups); duration = time only; weight_duration = weight + time; distance_duration = distance + time (e.g. running); short_distance_weight = weight + short distance (e.g. farmer\'s carry).',
           },
-          end_date: {
+          equipment_category: {
             type: 'string',
-            description: 'ISO 8601 date string (YYYY-MM-DD) for end of date range',
+            enum: [
+              'none',
+              'barbell',
+              'dumbbell',
+              'kettlebell',
+              'machine',
+              'plate',
+              'resistance_band',
+              'suspension',
+              'other',
+            ],
+            description: 'Primary equipment used.',
           },
-          limit: {
-            type: 'number',
-            description: 'Max number of progress entries to return (default: 50, max: 100)',
-            default: 50,
+          muscle_group: {
+            type: 'string',
+            enum: [
+              'abdominals',
+              'shoulders',
+              'biceps',
+              'triceps',
+              'forearms',
+              'quadriceps',
+              'hamstrings',
+              'calves',
+              'glutes',
+              'abductors',
+              'adductors',
+              'lats',
+              'upper_back',
+              'traps',
+              'lower_back',
+              'chest',
+              'cardio',
+              'neck',
+              'full_body',
+              'other',
+            ],
+            description: 'Primary muscle group worked.',
+          },
+          other_muscles: {
+            type: 'array',
+            description: 'Optional secondary muscle groups (same enum as muscle_group).',
+            items: {
+              type: 'string',
+              enum: [
+                'abdominals',
+                'shoulders',
+                'biceps',
+                'triceps',
+                'forearms',
+                'quadriceps',
+                'hamstrings',
+                'calves',
+                'glutes',
+                'abductors',
+                'adductors',
+                'lats',
+                'upper_back',
+                'traps',
+                'lower_back',
+                'chest',
+                'cardio',
+                'neck',
+                'full_body',
+                'other',
+              ],
+            },
           },
         },
-        required: ['exercise_template_id'],
+        required: ['title', 'exercise_type', 'equipment_category', 'muscle_group'],
       },
     },
     {
-      name: 'get-exercise-stats',
+      name: 'get-exercise-history',
       description:
-        'Get personal records and statistics for a specific exercise. Returns PRs, estimated 1RM, total volume, and total reps.',
+        'Get the historical sets logged for a single exercise across all of the user\'s past workouts. Returns one entry per set with the workout it belongs to, set type, weight, reps, distance, duration, RPE, and any custom_metric. Optional ISO 8601 date-time bounds (e.g. "2024-01-01T00:00:00Z") narrow the range. Use this for progress tracking, PR detection, or volume analysis. (Replaces the older "exercise progress" / "exercise stats" tools — Hevy\'s public API only exposes raw history; aggregate any stats client-side.)',
       inputSchema: {
         type: 'object',
         properties: {
           exercise_template_id: {
             type: 'string',
-            description: 'The exercise template ID to get stats for',
+            description: 'The exercise template ID to look up history for.',
+          },
+          start_date: {
+            type: 'string',
+            description:
+              'Optional ISO 8601 date-time (e.g. "2024-01-01T00:00:00Z") — only sets at or after this time are returned.',
+          },
+          end_date: {
+            type: 'string',
+            description:
+              'Optional ISO 8601 date-time (e.g. "2024-12-31T23:59:59Z") — only sets at or before this time are returned.',
           },
         },
         required: ['exercise_template_id'],
@@ -97,156 +178,137 @@ export function getExerciseTools() {
 export async function handleExerciseToolCall(request: any, client: HevyClient) {
   try {
     switch (request.params.name) {
-        case 'get-exercise-templates': {
-          const validation = safeValidateInput(
-            PaginationParamsSchema,
-            request.params.arguments || {}
-          );
+      case 'get-exercise-templates': {
+        const validation = safeValidateInput(
+          PaginationParamsSchema,
+          request.params.arguments || {}
+        );
 
-          if (!validation.success) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Validation error: ${validation.error.message}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
-          const exercises = await client.getExerciseTemplates(validation.data);
+        if (!validation.success) {
           return {
             content: [
               {
                 type: 'text',
-                text: formatExerciseTemplateList(exercises),
+                text: `Validation error: ${validation.error.message}`,
               },
             ],
+            isError: true,
           };
         }
 
-        case 'get-exercise-template': {
-          const { id } = request.params.arguments as { id: string };
-          if (!id) {
-            return {
-              content: [{ type: 'text', text: 'Error: exercise template ID is required' }],
-              isError: true,
-            };
-          }
-
-          const exercise = await client.getExerciseTemplate(id);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: formatExerciseTemplate(exercise),
-              },
-            ],
-          };
-        }
-
-        case 'get-exercise-progress': {
-          const validation = safeValidateInput(
-            ExerciseProgressParamsSchema,
-            request.params.arguments || {}
-          );
-
-          if (!validation.success) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Validation error: ${validation.error.message}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
-          const progress = await client.getExerciseProgress(validation.data);
-
-          if (progress.length === 0) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: 'No progress data found for this exercise in the specified date range.',
-                },
-              ],
-            };
-          }
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Progress data for exercise:\n\n${JSON.stringify(progress, null, 2)}`,
-              },
-            ],
-          };
-        }
-
-        case 'get-exercise-stats': {
-          const { exercise_template_id } = request.params.arguments as {
-            exercise_template_id: string;
-          };
-          if (!exercise_template_id) {
-            return {
-              content: [{ type: 'text', text: 'Error: exercise_template_id is required' }],
-              isError: true,
-            };
-          }
-
-          const stats = await client.getExerciseStats(exercise_template_id);
-
-          const lines: string[] = [];
-          lines.push(`# Exercise Statistics`);
-          lines.push(`Exercise ID: ${stats.exercise_template_id}`);
-          lines.push('');
-
-          if (stats.one_rep_max_kg) {
-            lines.push(`**Estimated 1RM:** ${stats.one_rep_max_kg} kg`);
-          }
-          if (stats.total_volume_kg) {
-            lines.push(`**Total Volume:** ${stats.total_volume_kg} kg`);
-          }
-          if (stats.total_reps) {
-            lines.push(`**Total Reps:** ${stats.total_reps}`);
-          }
-
-          if (stats.personal_records && stats.personal_records.length > 0) {
-            lines.push('');
-            lines.push('## Personal Records');
-            stats.personal_records.forEach((pr) => {
-              lines.push(
-                `- **${pr.type}**: ${pr.value} ${pr.unit} (${new Date(pr.date).toLocaleDateString()})`
-              );
-            });
-          }
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: lines.join('\n'),
-              },
-            ],
-          };
-        }
-
-        default:
-          return null; // Tool not handled by this module
+        const exercises = await client.getExerciseTemplates(validation.data);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: formatExerciseTemplateList(exercises),
+            },
+          ],
+        };
       }
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: handleToolError(error),
-          },
-        ],
-        isError: true,
-      };
+
+      case 'get-exercise-template': {
+        const { id } = request.params.arguments as { id: string };
+        if (!id) {
+          return {
+            content: [{ type: 'text', text: 'Error: exercise template ID is required' }],
+            isError: true,
+          };
+        }
+
+        const exercise = await client.getExerciseTemplate(id);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: formatExerciseTemplate(exercise),
+            },
+          ],
+        };
+      }
+
+      case 'create-exercise-template': {
+        const validation = safeValidateInput(
+          CreateCustomExerciseInputSchema,
+          request.params.arguments || {}
+        );
+
+        if (!validation.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Validation error: ${validation.error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const result = await client.createCustomExerciseTemplate(validation.data);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Custom exercise template created. ID: ${result.id}`,
+            },
+          ],
+        };
+      }
+
+      case 'get-exercise-history': {
+        const validation = safeValidateInput(
+          ExerciseHistoryParamsSchema,
+          request.params.arguments || {}
+        );
+
+        if (!validation.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Validation error: ${validation.error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const history = await client.getExerciseHistory(validation.data);
+
+        if (history.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'No history found for this exercise in the specified date range.',
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Exercise history (${history.length} sets):\n\n${JSON.stringify(history, null, 2)}`,
+            },
+          ],
+        };
+      }
+
+      default:
+        return null; // Tool not handled by this module
     }
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: handleToolError(error),
+        },
+      ],
+      isError: true,
+    };
+  }
 }

@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer as createHttpsServer } from 'https';
@@ -56,25 +57,42 @@ setInterval(() => {
  * Initialize SSE transport for Poke.com
  * This transport uses Server-Sent Events for real-time communication
  */
-export function createSSETransport(
-  server: Server,
+/**
+ * @param serverFactory function returning a fresh Server instance — called per
+ *   incoming MCP request because the stateless Streamable HTTP transport
+ *   pattern requires a fresh server+transport pair per request (the Server
+ *   class binds to a single transport at a time).
+ */
+export async function createSSETransport(
+  serverFactory: () => Server,
   config: SSETransportConfig
-): express.Application {
+): Promise<express.Application> {
   const app = express();
   const isProduction = process.env.NODE_ENV === 'production';
   const sessionTimeout = config.sessionTimeout || 30 * 24 * 60 * 60 * 1000; // 30 days default
 
-  // Security headers with Helmet
+  // Security headers with Helmet.
+  // Several CSP/COOP defaults break the OAuth popup flow with claude.ai:
+  //  - form-action 'self' blocks cross-origin redirects in form submission chains.
+  //    /approve POST returns a 302 to https://claude.ai/api/mcp/auth_callback;
+  //    the browser refuses to follow it under that directive, so the popup
+  //    stays on /authorize and claude.ai never gets the auth code.
+  //  - Cross-Origin-Opener-Policy: same-origin sandboxes the popup away from
+  //    its claude.ai opener, breaking the postMessage handshake.
+  // Permit form actions to claude.ai and disable COOP/CORP.
   app.use(
     helmet({
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'"],
-          styleSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:'],
+          formAction: ["'self'", 'https://claude.ai', 'https://*.claude.ai', 'http://localhost', 'http://127.0.0.1'],
         },
       },
+      crossOriginOpenerPolicy: false,
+      crossOriginResourcePolicy: false,
       hsts: {
         maxAge: 31536000, // 1 year
         includeSubDomains: true,
@@ -227,101 +245,35 @@ export function createSSETransport(
     });
   });
 
-  // SSE endpoint
-  app.get(config.ssePath, authResource, async (req: Request, res: Response) => {
-    const sessionId = (req.headers['mcp-session-id'] as string) || generateSessionId();
-
-    logger.info('SSE connection established', { sessionId, ip: req.ip });
-
-    // Create or update session
-    if (!sessions.has(sessionId)) {
-      const session: Session = {
-        id: sessionId,
-        createdAt: Date.now(),
-        lastActivity: Date.now(),
-        ip: req.ip,
-      };
-      sessions.set(sessionId, session);
-      logger.sessionCreated(sessionId, req.ip);
-    }
-
-    const transport = new SSEServerTransport(config.ssePath, res);
-
-    // Store transport by sessionId for message routing
-    const transportSessionId = (transport as any).sessionId;
-    if (transportSessionId) {
-      // Set the session ID header for the client
-      res.setHeader('Mcp-Session-Id', transportSessionId);
-
-      transports.set(transportSessionId, transport);
-      logger.info('Transport stored for session', { sessionId: transportSessionId });
-    }
-
-    await server.connect(transport);
-
-    // Keep the connection alive with heartbeats
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': heartbeat\n\n');
-
-        // Update session activity
-        const session = sessions.get(sessionId);
-        if (session) {
-          session.lastActivity = Date.now();
-          sessions.set(sessionId, session);
-        }
-      } catch (error) {
-        clearInterval(heartbeat);
-      }
-    }, config.heartbeatInterval);
-
-    // Cleanup on connection close
-    req.on('close', () => {
-      logger.info('SSE connection closed', { sessionId });
-      clearInterval(heartbeat);
+  // /mcp uses Streamable HTTP in stateless mode. Per the SDK example
+  // (simpleStatelessStreamableHttp.js), each request gets its own fresh
+  // Server + Transport pair — the Server binds to one transport for the
+  // lifetime of the request, then both are closed.
+  const handleMcp = async (req: Request, res: Response) => {
+    const server = serverFactory();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => {
       transport.close();
-      // Don't delete session - allow reconnection within timeout period
+      server.close();
     });
-  });
-
-  // POST endpoint for messages
-  app.post(config.ssePath, authResource, async (req: Request, res: Response) => {
     try {
-      // Get sessionId from header (preferred) or query parameter (backward compatibility)
-      const sessionId =
-        (req.headers['mcp-session-id'] as string) ||
-        (req.query.sessionId as string);
-
-      if (!sessionId) {
-        console.error('POST request missing sessionId (checked header and query parameter)');
-        res.status(400).json({ error: 'Missing sessionId in Mcp-Session-Id header or sessionId query parameter' });
-        return;
+      await server.connect(transport);
+      await transport.handleRequest(req as any, res, req.body);
+    } catch (err) {
+      logger.error('MCP request failed', { path: req.path, method: req.method }, err as Error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
       }
-
-      // Find the transport for this session
-      const transport = transports.get(sessionId);
-
-      if (!transport) {
-        console.error(`No transport found for sessionId: ${sessionId}`);
-        console.error(`Available sessions: ${Array.from(transports.keys()).join(', ')}`);
-        res.status(404).json({ error: 'Session not found' });
-        return;
-      }
-
-      // Let the transport handle the incoming message
-      console.error(`Handling POST message for session: ${sessionId}`);
-      await transport.handlePostMessage(req, res, req.body);
-    } catch (error) {
-      logger.error('Error handling POST request', { path: req.path }, error as Error);
-
-      const sanitizedMessage = sanitizeErrorMessage(error, isProduction);
-
-      res.status(500).json({
-        error: 'Internal server error',
-        message: sanitizedMessage,
-      });
     }
-  });
+  };
+
+  app.get(config.ssePath, authResource, handleMcp);
+  app.post(config.ssePath, authResource, handleMcp);
+  app.delete(config.ssePath, authResource, handleMcp);
 
   // Global error handler
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
@@ -349,10 +301,10 @@ function generateSessionId(): string {
  * Start the SSE server with optional HTTPS support
  */
 export async function initializeSSETransport(
-  server: Server,
+  serverFactory: () => Server,
   config: SSETransportConfig
 ): Promise<void> {
-  const app = createSSETransport(server, config);
+  const app = await createSSETransport(serverFactory, config);
 
   return new Promise((resolve, reject) => {
     try {

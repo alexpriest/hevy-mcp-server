@@ -113,6 +113,12 @@ class PasscodeOAuthProvider implements OAuthServerProvider {
   /**
    * Called by POST /approve once the user enters the right passcode.
    * Issues an auth code and returns the redirect URL back to the client.
+   *
+   * Approval entries are NOT deleted on first use — claude.ai (and some
+   * browsers) occasionally re-POST the form, and a single-use approvalId
+   * caused a "Not approved — Unknown or expired approval" page on the
+   * second hit. The auth code itself is single-use (consumed at /token),
+   * which is the actual security boundary.
    */
   approve(approvalId: string, passcode: string): string {
     if (passcode !== this.passcode) {
@@ -124,7 +130,6 @@ class PasscodeOAuthProvider implements OAuthServerProvider {
       this.pending.delete(approvalId);
       throw new Error('Approval expired — please retry from claude.ai');
     }
-    this.pending.delete(approvalId);
 
     const code = randomBytes(32).toString('base64url');
     this.codes.set(code, {

@@ -1,5 +1,3 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { HevyClient } from '../hevy/client.js';
 import { handleToolError } from '../utils/errors.js';
 import { CreateFolderInputSchema, safeValidateInput } from '../utils/validators.js';
@@ -10,7 +8,8 @@ export function getFolderTools() {
   return [
     {
       name: 'get-routine-folders',
-      description: 'Get a list of all routine folders. Use folders to organize your workout routines.',
+      description:
+        'Get all routine folders on the account. Folders are containers for organizing routines. Returns each folder\'s id, title, and timestamps. Note: the Hevy public API does not currently support pagination on this endpoint, but it returns paginated metadata.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -18,7 +17,8 @@ export function getFolderTools() {
     },
     {
       name: 'get-routine-folder',
-      description: 'Get detailed information about a specific routine folder by ID.',
+      description:
+        'Get a single routine folder by ID. Returns title, id, index (its position in the user\'s folder list), and timestamps.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -32,48 +32,17 @@ export function getFolderTools() {
     },
     {
       name: 'create-routine-folder',
-      description: 'Create a new folder to organize workout routines.',
+      description:
+        'Create a new routine folder. The new folder is inserted at index 0 (top of the list); existing folders are shifted down. Note: the Hevy public API does not currently support renaming or deleting folders — those must be done in the Hevy app.',
       inputSchema: {
         type: 'object',
         properties: {
           title: {
             type: 'string',
-            description: 'Folder name (e.g., "Strength Training", "Cardio Routines")',
+            description: 'Folder name (e.g. "Strength Training", "Cardio Routines")',
           },
         },
         required: ['title'],
-      },
-    },
-    {
-      name: 'update-routine-folder',
-      description: 'Update an existing routine folder name.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: 'The unique folder ID to update',
-          },
-          title: {
-            type: 'string',
-            description: 'New folder name',
-          },
-        },
-        required: ['id', 'title'],
-      },
-    },
-    {
-      name: 'delete-routine-folder',
-      description: 'Delete a routine folder by ID. This action cannot be undone.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: 'The unique folder ID to delete',
-          },
-        },
-        required: ['id'],
       },
     },
   ];
@@ -83,165 +52,114 @@ export function getFolderTools() {
 export async function handleFolderToolCall(request: any, client: HevyClient) {
   try {
     switch (request.params.name) {
-        case 'get-routine-folders': {
-          const folders = await client.getRoutineFolders();
+      case 'get-routine-folders': {
+        const folders = await client.getRoutineFolders();
 
-          if (folders.length === 0) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: 'No routine folders found.',
-                },
-              ],
-            };
-          }
-
-          const lines: string[] = [`Found ${folders.length} folder(s):\n`];
-          folders.forEach((folder: RoutineFolder, idx: number) => {
-            lines.push(`${idx + 1}. **${folder.title}**`);
-            lines.push(`   ID: ${folder.id}`);
-            if (folder.created_at) {
-              lines.push(`   Created: ${new Date(folder.created_at).toLocaleDateString()}`);
-            }
-            lines.push('');
-          });
-
+        if (folders.length === 0) {
           return {
             content: [
               {
                 type: 'text',
-                text: lines.join('\n'),
+                text: 'No routine folders found.',
               },
             ],
           };
         }
 
-        case 'get-routine-folder': {
-          const { id } = request.params.arguments as { id: string };
-          if (!id) {
-            return {
-              content: [{ type: 'text', text: 'Error: folder ID is required' }],
-              isError: true,
-            };
-          }
-
-          const folder = await client.getRoutineFolder(id);
-          const lines: string[] = [];
-          lines.push(`# ${folder.title}`);
-          lines.push(`**ID:** ${folder.id}`);
+        const lines: string[] = [`Found ${folders.length} folder(s):\n`];
+        folders.forEach((folder: RoutineFolder, idx: number) => {
+          lines.push(`${idx + 1}. **${folder.title}**`);
+          lines.push(`   ID: ${folder.id}`);
           if (folder.created_at) {
-            lines.push(`**Created:** ${new Date(folder.created_at).toLocaleString()}`);
+            lines.push(`   Created: ${new Date(folder.created_at).toLocaleDateString()}`);
           }
-          if (folder.updated_at) {
-            lines.push(`**Updated:** ${new Date(folder.updated_at).toLocaleString()}`);
-          }
+          lines.push('');
+        });
 
-          return {
-            content: [
-              {
-                type: 'text',
-                text: lines.join('\n'),
-              },
-            ],
-          };
-        }
-
-        case 'create-routine-folder': {
-          const validation = safeValidateInput(
-            CreateFolderInputSchema,
-            request.params.arguments || {}
-          );
-
-          if (!validation.success) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Validation error: ${validation.error.message}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
-          const folder = await client.createRoutineFolder(validation.data);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ Folder created successfully!\n\n**${folder.title}**\nID: ${folder.id}`,
-              },
-            ],
-          };
-        }
-
-        case 'update-routine-folder': {
-          const { id, title } = request.params.arguments as { id: string; title: string };
-          if (!id) {
-            return {
-              content: [{ type: 'text', text: 'Error: folder ID is required' }],
-              isError: true,
-            };
-          }
-
-          const validation = safeValidateInput(CreateFolderInputSchema, { title });
-
-          if (!validation.success) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Validation error: ${validation.error.message}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
-          const folder = await client.updateRoutineFolder(id, validation.data);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ Folder updated successfully!\n\n**${folder.title}**\nID: ${folder.id}`,
-              },
-            ],
-          };
-        }
-
-        case 'delete-routine-folder': {
-          const { id } = request.params.arguments as { id: string };
-          if (!id) {
-            return {
-              content: [{ type: 'text', text: 'Error: folder ID is required' }],
-              isError: true,
-            };
-          }
-
-          await client.deleteRoutineFolder(id);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ Folder deleted successfully! (ID: ${id})`,
-              },
-            ],
-          };
-        }
-
-        default:
-          return null; // Tool not handled by this module
+        return {
+          content: [
+            {
+              type: 'text',
+              text: lines.join('\n'),
+            },
+          ],
+        };
       }
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: handleToolError(error),
-          },
-        ],
-        isError: true,
-      };
+
+      case 'get-routine-folder': {
+        const { id } = request.params.arguments as { id: string };
+        if (!id) {
+          return {
+            content: [{ type: 'text', text: 'Error: folder ID is required' }],
+            isError: true,
+          };
+        }
+
+        const folder = await client.getRoutineFolder(id);
+        const lines: string[] = [];
+        lines.push(`# ${folder.title}`);
+        lines.push(`**ID:** ${folder.id}`);
+        if (folder.index !== undefined) {
+          lines.push(`**Index:** ${folder.index}`);
+        }
+        if (folder.created_at) {
+          lines.push(`**Created:** ${new Date(folder.created_at).toLocaleString()}`);
+        }
+        if (folder.updated_at) {
+          lines.push(`**Updated:** ${new Date(folder.updated_at).toLocaleString()}`);
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: lines.join('\n'),
+            },
+          ],
+        };
+      }
+
+      case 'create-routine-folder': {
+        const validation = safeValidateInput(
+          CreateFolderInputSchema,
+          request.params.arguments || {}
+        );
+
+        if (!validation.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Validation error: ${validation.error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const folder = await client.createRoutineFolder(validation.data);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Folder created.\n\n**${folder.title}**\nID: ${folder.id}`,
+            },
+          ],
+        };
+      }
+
+      default:
+        return null; // Tool not handled by this module
     }
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: handleToolError(error),
+        },
+      ],
+      isError: true,
+    };
+  }
 }

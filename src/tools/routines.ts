@@ -61,7 +61,11 @@ export function getRoutineTools() {
           },
           folder_id: {
             type: 'string',
-            description: 'Optional folder ID to organize routine',
+            description: 'Optional folder ID to organize routine. Pass null or omit to insert into the default "My Routines" folder.',
+          },
+          notes: {
+            type: 'string',
+            description: 'Optional routine-level notes (shown above the exercises in the Hevy app).',
           },
           exercises: {
             type: 'array',
@@ -141,7 +145,11 @@ export function getRoutineTools() {
           },
           folder_id: {
             type: 'string',
-            description: 'New folder ID',
+            description: 'New folder ID. Pass null to remove the routine from any folder.',
+          },
+          notes: {
+            type: 'string',
+            description: 'New routine-level notes.',
           },
           exercises: {
             type: 'array',
@@ -199,20 +207,6 @@ export function getRoutineTools() {
               },
               required: ['exercise_template_id', 'sets'],
             },
-          },
-        },
-        required: ['id'],
-      },
-    },
-    {
-      name: 'delete-routine',
-      description: 'Delete a routine by ID. This action cannot be undone.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: 'The unique routine ID to delete',
           },
         },
         required: ['id'],
@@ -332,26 +326,6 @@ export async function handleRoutineToolCall(request: any, client: HevyClient) {
               {
                 type: 'text',
                 text: `✅ Routine updated successfully!\n\n${formatRoutine(routine)}`,
-              },
-            ],
-          };
-        }
-
-        case 'delete-routine': {
-          const { id } = request.params.arguments as { id: string };
-          if (!id) {
-            return {
-              content: [{ type: 'text', text: 'Error: routine ID is required' }],
-              isError: true,
-            };
-          }
-
-          await client.deleteRoutine(id);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ Routine deleted successfully! (ID: ${id})`,
               },
             ],
           };

@@ -9,15 +9,18 @@ import {
   CreateRoutineInput,
   UpdateRoutineInput,
   ExerciseTemplate,
-  ExerciseProgress,
-  ExerciseStats,
-  ExerciseProgressParams,
+  ExerciseHistoryEntry,
+  ExerciseHistoryParams,
+  CreateCustomExerciseInput,
   RoutineFolder,
   CreateFolderInput,
-  WebhookSubscription,
-  CreateWebhookInput,
+  BodyMeasurement,
+  CreateBodyMeasurementInput,
+  UpdateBodyMeasurementInput,
+  UserInfo,
   PaginationParams,
   WorkoutQueryParams,
+  WorkoutEventsParams,
 } from './types.js';
 
 export class HevyClient {
@@ -30,9 +33,9 @@ export class HevyClient {
   }
 
   /**
-   * Clean payload by removing only undefined values
+   * Clean payload by removing only undefined values.
    * Keeps null values as they are semantically meaningful to the API
-   * (e.g., folder_id: null means "no folder")
+   * (e.g., folder_id: null means "no folder" / default folder).
    */
   private cleanPayload<T extends Record<string, any>>(obj: T): Partial<T> {
     const cleaned: any = {};
@@ -92,7 +95,16 @@ export class HevyClient {
         );
       }
 
-      return response.json() as Promise<T>;
+      // Some endpoints (PUT body_measurements) return 200 with empty body
+      const text = await response.text();
+      if (!text) {
+        return undefined as T;
+      }
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        return text as unknown as T;
+      }
     } catch (error) {
       clearTimeout(timeout);
 
@@ -150,18 +162,17 @@ export class HevyClient {
     return response.workout[0];
   }
 
-  async deleteWorkout(id: string): Promise<void> {
-    await this.request(`/v1/workouts/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-  }
-
   async getWorkoutCount(): Promise<WorkoutCountResponse> {
     return this.request<WorkoutCountResponse>('/v1/workouts/count');
   }
 
-  async getWorkoutEvents(sinceDate: string): Promise<WorkoutEvent[]> {
-    const queryParams = new URLSearchParams({ since: sinceDate });
+  async getWorkoutEvents(params: WorkoutEventsParams): Promise<WorkoutEvent[]> {
+    const { since, page = 1, pageSize = 5 } = params;
+    const queryParams = new URLSearchParams({
+      since,
+      page: String(page),
+      pageSize: String(pageSize),
+    });
     const response = await this.request<{ events: WorkoutEvent[] }>(
       `/v1/workouts/events?${queryParams.toString()}`
     );
@@ -196,21 +207,21 @@ export class HevyClient {
   }
 
   async updateRoutine(id: string, data: UpdateRoutineInput): Promise<Routine> {
+    // Hevy's PUT /v1/routines/{id} rejects folder_id (the field is only accepted on create).
+    // Strip it before sending — folder changes must be done in-app.
+    const { folder_id, ...rest } = data;
     const response = await this.request<{ routine: Routine[] }>(`/v1/routines/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      body: JSON.stringify({ routine: this.cleanPayload(data) }),
+      body: JSON.stringify({ routine: this.cleanPayload(rest) }),
     });
     // API returns { routine: [{ ... }] }, extract first element
     return response.routine[0];
   }
 
-  async deleteRoutine(id: string): Promise<void> {
-    await this.request(`/v1/routines/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-  }
+  // NOTE: Hevy's public API does not currently expose DELETE for workouts or routines.
+  // Deletion can only be done in the Hevy app.
 
-  // ===== Exercise Methods =====
+  // ===== Exercise Template Methods =====
 
   async getExerciseTemplates(params: PaginationParams = {}): Promise<ExerciseTemplate[]> {
     const { page = 0, pageSize = 50 } = params;
@@ -228,94 +239,118 @@ export class HevyClient {
     return this.request<ExerciseTemplate>(`/v1/exercise_templates/${encodeURIComponent(id)}`);
   }
 
-  async getExerciseProgress(params: ExerciseProgressParams): Promise<ExerciseProgress[]> {
-    const { exercise_template_id, start_date, end_date, limit = 50 } = params;
-
-    const queryParams = new URLSearchParams({
-      limit: String(limit),
+  async createCustomExerciseTemplate(
+    data: CreateCustomExerciseInput
+  ): Promise<{ id: number | string }> {
+    return this.request<{ id: number | string }>('/v1/exercise_templates', {
+      method: 'POST',
+      body: JSON.stringify({ exercise: this.cleanPayload(data) }),
     });
-
-    if (start_date) {
-      queryParams.append('start_date', start_date);
-    }
-    if (end_date) {
-      queryParams.append('end_date', end_date);
-    }
-
-    const endpoint = `/v1/exercises/${encodeURIComponent(exercise_template_id)}/progress?${queryParams.toString()}`;
-    const response = await this.request<{ progress: ExerciseProgress[] }>(endpoint);
-    return response.progress || [];
   }
 
-  async getExerciseStats(exerciseTemplateId: string): Promise<ExerciseStats> {
-    return this.request<ExerciseStats>(
-      `/v1/exercises/${encodeURIComponent(exerciseTemplateId)}/stats`
+  // ===== Exercise History =====
+
+  async getExerciseHistory(
+    params: ExerciseHistoryParams
+  ): Promise<ExerciseHistoryEntry[]> {
+    const { exercise_template_id, start_date, end_date } = params;
+    const queryParams = new URLSearchParams();
+    if (start_date) queryParams.append('start_date', start_date);
+    if (end_date) queryParams.append('end_date', end_date);
+
+    const qs = queryParams.toString();
+    const endpoint =
+      `/v1/exercise_history/${encodeURIComponent(exercise_template_id)}` +
+      (qs ? `?${qs}` : '');
+    const response = await this.request<{ exercise_history: ExerciseHistoryEntry[] }>(
+      endpoint
     );
+    return response.exercise_history || [];
   }
 
-  // ===== Folder Methods =====
+  // ===== Routine Folder Methods =====
 
   async getRoutineFolders(): Promise<RoutineFolder[]> {
-    const response = await this.request<{ folders: RoutineFolder[] }>(
+    const response = await this.request<{ routine_folders: RoutineFolder[]; folders?: RoutineFolder[] }>(
       '/v1/routine_folders'
     );
-    return response.folders || [];
+    return response.routine_folders || response.folders || [];
   }
 
   async getRoutineFolder(id: string): Promise<RoutineFolder> {
-    return this.request<RoutineFolder>(`/v1/routine_folders/${encodeURIComponent(id)}`);
+    const response = await this.request<{ routine_folder?: RoutineFolder } | RoutineFolder>(
+      `/v1/routine_folders/${encodeURIComponent(id)}`
+    );
+    // Hevy may return the folder either bare or wrapped in { routine_folder: ... }
+    if (response && typeof response === 'object' && 'routine_folder' in response && response.routine_folder) {
+      return response.routine_folder;
+    }
+    return response as RoutineFolder;
   }
 
   async createRoutineFolder(data: CreateFolderInput): Promise<RoutineFolder> {
-    const response = await this.request<{ folder: RoutineFolder[] }>('/v1/routine_folders', {
+    const response = await this.request<{ routine_folder: RoutineFolder }>('/v1/routine_folders', {
       method: 'POST',
-      body: JSON.stringify({ folder: this.cleanPayload(data) }),
+      body: JSON.stringify({ routine_folder: this.cleanPayload(data) }),
     });
-    // API returns { folder: [{ ... }] }, extract first element
-    return response.folder[0];
+    return response.routine_folder;
   }
 
-  async updateRoutineFolder(id: string, data: CreateFolderInput): Promise<RoutineFolder> {
-    const response = await this.request<{ folder: RoutineFolder[] }>(`/v1/routine_folders/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ folder: this.cleanPayload(data) }),
+  // NOTE: Hevy's public API does not currently expose PUT or DELETE for routine folders.
+
+  // ===== Body Measurement Methods =====
+
+  async getBodyMeasurements(
+    params: PaginationParams = {}
+  ): Promise<BodyMeasurement[]> {
+    const { page = 1, pageSize = 10 } = params;
+    const queryParams = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
     });
-    // API returns { folder: [{ ... }] }, extract first element
-    return response.folder[0];
+    const response = await this.request<{ body_measurements: BodyMeasurement[] }>(
+      `/v1/body_measurements?${queryParams.toString()}`
+    );
+    return response.body_measurements || [];
   }
 
-  async deleteRoutineFolder(id: string): Promise<void> {
-    await this.request(`/v1/routine_folders/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
+  async getBodyMeasurement(date: string): Promise<BodyMeasurement> {
+    return this.request<BodyMeasurement>(
+      `/v1/body_measurements/${encodeURIComponent(date)}`
+    );
+  }
+
+  async createBodyMeasurement(
+    data: CreateBodyMeasurementInput
+  ): Promise<void> {
+    await this.request<void>('/v1/body_measurements', {
+      method: 'POST',
+      body: JSON.stringify(this.cleanPayload(data)),
     });
   }
 
-  // ===== Webhook Methods =====
-
-  async getWebhookSubscription(): Promise<WebhookSubscription | null> {
-    try {
-      return await this.request<WebhookSubscription>('/v1/webhooks/subscription');
-    } catch (error) {
-      // Return null if no subscription exists (404)
-      if (error instanceof Error && error.message.includes('404')) {
-        return null;
+  async updateBodyMeasurement(
+    date: string,
+    data: UpdateBodyMeasurementInput
+  ): Promise<void> {
+    await this.request<void>(
+      `/v1/body_measurements/${encodeURIComponent(date)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(this.cleanPayload(data)),
       }
-      throw error;
+    );
+  }
+
+  // ===== User Methods =====
+
+  async getUserInfo(): Promise<UserInfo> {
+    const response = await this.request<{ data: UserInfo } | UserInfo>(
+      '/v1/user/info'
+    );
+    if (response && typeof response === 'object' && 'data' in response && response.data) {
+      return (response as { data: UserInfo }).data;
     }
-  }
-
-  async createWebhookSubscription(data: CreateWebhookInput): Promise<WebhookSubscription> {
-    const response = await this.request<{ webhook: WebhookSubscription[] }>('/v1/webhooks/subscription', {
-      method: 'POST',
-      body: JSON.stringify({ webhook: this.cleanPayload(data) }),
-    });
-    // API returns { webhook: [{ ... }] }, extract first element
-    return response.webhook[0];
-  }
-
-  async deleteWebhookSubscription(): Promise<void> {
-    await this.request('/v1/webhooks/subscription', {
-      method: 'DELETE',
-    });
+    return response as UserInfo;
   }
 }

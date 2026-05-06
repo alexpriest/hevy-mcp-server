@@ -5,6 +5,8 @@ import { handleWorkoutToolCall, getWorkoutTools } from './tools/workouts.js';
 import { handleRoutineToolCall, getRoutineTools } from './tools/routines.js';
 import { handleExerciseToolCall, getExerciseTools } from './tools/exercises.js';
 import { handleFolderToolCall, getFolderTools } from './tools/folders.js';
+import { handleMeasurementToolCall, getMeasurementTools } from './tools/measurements.js';
+import { handleUserToolCall, getUserTools } from './tools/user.js';
 import { ConfigurationError } from './utils/errors.js';
 
 export interface ServerConfig {
@@ -43,6 +45,8 @@ export function createHevyMCPServer(config: ServerConfig): Server {
     ...getRoutineTools(),
     ...getExerciseTools(),
     ...getFolderTools(),
+    ...getMeasurementTools(),
+    ...getUserTools(),
   ];
 
   // Register single ListToolsRequestSchema handler with all tools
@@ -63,6 +67,12 @@ export function createHevyMCPServer(config: ServerConfig): Server {
     if (result) return result;
 
     result = await handleFolderToolCall(request, hevyClient);
+    if (result) return result;
+
+    result = await handleMeasurementToolCall(request, hevyClient);
+    if (result) return result;
+
+    result = await handleUserToolCall(request, hevyClient);
     if (result) return result;
 
     // If no handler processed the tool, return an error

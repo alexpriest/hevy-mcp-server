@@ -7,6 +7,7 @@ import {
   CreateWorkoutInputSchema,
   UpdateWorkoutInputSchema,
   WorkoutQueryParamsSchema,
+  WorkoutEventsParamsSchema,
   safeValidateInput,
 } from '../utils/validators.js';
 
@@ -79,6 +80,10 @@ export function getWorkoutTools() {
             type: 'string',
             description: 'ISO 8601 datetime string when workout ended',
           },
+          is_private: {
+            type: 'boolean',
+            description: 'Whether the workout is private. Defaults to the account default if omitted.',
+          },
           exercises: {
             type: 'array',
             description: 'Array of exercises performed in this workout',
@@ -124,9 +129,13 @@ export function getWorkoutTools() {
                         type: 'number',
                         description: 'Duration in seconds (for cardio/timed exercises)',
                       },
+                      custom_metric: {
+                        type: 'number',
+                        description: 'Optional custom metric (currently used for steps and floors).',
+                      },
                       rpe: {
                         type: 'number',
-                        description: 'Rate of Perceived Exertion (1-10)',
+                        description: 'Rate of Perceived Exertion. Hevy stores values from {6, 7, 7.5, 8, 8.5, 9, 9.5, 10}.',
                       },
                     },
                     required: ['type'],
@@ -166,6 +175,10 @@ export function getWorkoutTools() {
           end_time: {
             type: 'string',
             description: 'New ISO 8601 datetime for end time',
+          },
+          is_private: {
+            type: 'boolean',
+            description: 'Whether the workout is private.',
           },
           exercises: {
             type: 'array',
@@ -212,9 +225,13 @@ export function getWorkoutTools() {
                         type: 'number',
                         description: 'Duration in seconds (for cardio/timed exercises)',
                       },
+                      custom_metric: {
+                        type: 'number',
+                        description: 'Optional custom metric (currently used for steps and floors).',
+                      },
                       rpe: {
                         type: 'number',
-                        description: 'Rate of Perceived Exertion (1-10)',
+                        description: 'Rate of Perceived Exertion. Hevy stores values from {6, 7, 7.5, 8, 8.5, 9, 9.5, 10}.',
                       },
                     },
                     required: ['type'],
@@ -239,16 +256,26 @@ export function getWorkoutTools() {
     {
       name: 'get-workout-events',
       description:
-        'Get workout update/delete events since a specific date. Useful for syncing or tracking changes.',
+        'Retrieve a paged list of workout events (updated or deleted) since a given timestamp, ordered newest to oldest. Each event is either an "updated" event (with the full workout payload) or a "deleted" event (with id + deleted_at). Designed for keeping a local cache in sync without re-fetching every workout. Defaults: page=1, pageSize=5, since=1970-01-01T00:00:00Z. Max pageSize is 10.',
       inputSchema: {
         type: 'object',
         properties: {
-          sinceDate: {
+          since: {
             type: 'string',
-            description: 'ISO 8601 date string (YYYY-MM-DD) to get events from',
+            description: 'ISO 8601 timestamp (e.g. "2024-01-01T00:00:00Z"). Only events at or after this time are returned.',
+          },
+          page: {
+            type: 'number',
+            description: 'Page number, 1-indexed (default: 1).',
+            default: 1,
+          },
+          pageSize: {
+            type: 'number',
+            description: 'Number of events per page (default: 5, max: 10).',
+            default: 5,
           },
         },
-        required: ['sinceDate'],
+        required: ['since'],
       },
     },
   ];
@@ -383,20 +410,32 @@ export async function handleWorkoutToolCall(request: any, client: HevyClient) {
         }
 
         case 'get-workout-events': {
-          const { sinceDate } = request.params.arguments as { sinceDate: string };
-          if (!sinceDate) {
+          const validation = safeValidateInput(
+            WorkoutEventsParamsSchema,
+            request.params.arguments || {}
+          );
+
+          if (!validation.success) {
             return {
-              content: [{ type: 'text', text: 'Error: sinceDate is required' }],
+              content: [
+                {
+                  type: 'text',
+                  text: `Validation error: ${validation.error.message}`,
+                },
+              ],
               isError: true,
             };
           }
 
-          const events = await client.getWorkoutEvents(sinceDate);
+          const events = await client.getWorkoutEvents(validation.data);
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(events, null, 2),
+                text:
+                  events.length === 0
+                    ? 'No workout events in the requested range.'
+                    : JSON.stringify(events, null, 2),
               },
             ],
           };

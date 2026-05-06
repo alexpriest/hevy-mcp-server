@@ -37,6 +37,7 @@ export const ExerciseSetSchema = z.object({
   reps: z.number().optional().nullable(),
   distance_meters: z.number().optional().nullable(),
   duration_seconds: z.number().optional().nullable(),
+  custom_metric: z.number().optional().nullable(),
   rpe: z.number().min(1).max(10).optional().nullable(),
 });
 
@@ -54,6 +55,7 @@ export const CreateWorkoutInputSchema = z.object({
   description: sanitizedString(5000).optional(),
   start_time: z.string().datetime(),
   end_time: z.string().datetime(),
+  is_private: z.boolean().optional(),
   exercises: z.array(WorkoutExerciseSchema),
 });
 
@@ -63,6 +65,7 @@ export const UpdateWorkoutInputSchema = z.object({
   description: sanitizedString(5000).optional(),
   start_time: z.string().datetime().optional(),
   end_time: z.string().datetime().optional(),
+  is_private: z.boolean().optional(),
   exercises: z.array(WorkoutExerciseSchema).optional(),
 });
 
@@ -70,6 +73,7 @@ export const UpdateWorkoutInputSchema = z.object({
 export const RoutineExerciseSchema = z.object({
   exercise_template_id: z.string(),
   superset_id: optionalString().nullable(),
+  rest_seconds: z.number().int().min(0).optional().nullable(),
   notes: sanitizedString(5000).optional(),
   sets: z.array(ExerciseSetSchema),
 });
@@ -78,6 +82,7 @@ export const RoutineExerciseSchema = z.object({
 export const CreateRoutineInputSchema = z.object({
   title: sanitizedString(200, 1),
   folder_id: optionalString(),
+  notes: sanitizedString(5000).optional(),
   exercises: z.array(RoutineExerciseSchema),
 });
 
@@ -85,6 +90,7 @@ export const CreateRoutineInputSchema = z.object({
 export const UpdateRoutineInputSchema = z.object({
   title: sanitizedString(200, 1).optional(),
   folder_id: optionalString(),
+  notes: sanitizedString(5000).optional(),
   exercises: z.array(RoutineExerciseSchema).optional(),
 });
 
@@ -105,27 +111,111 @@ export const WorkoutQueryParamsSchema = PaginationParamsSchema.extend({
   endDate: z.string().optional(),
 });
 
-// Exercise Progress Params Schema
-export const ExerciseProgressParamsSchema = z.object({
-  exercise_template_id: z.string(),
-  start_date: z.string().optional(),
-  end_date: z.string().optional(),
-  limit: z.number().int().min(1).max(100).optional(),
+// Workout Events Params Schema
+export const WorkoutEventsParamsSchema = z.object({
+  since: z.string(),
+  page: z.number().int().min(1).optional(),
+  pageSize: z.number().int().min(1).max(10).optional(),
 });
 
-// Webhook Input Schema
-export const CreateWebhookInputSchema = z.object({
-  url: z.string().url(),
-  events: z.array(
-    z.enum([
-      'workout.created',
-      'workout.updated',
-      'workout.deleted',
-      'routine.created',
-      'routine.updated',
-      'routine.deleted',
-    ])
-  ),
+// Exercise History Params Schema
+export const ExerciseHistoryParamsSchema = z.object({
+  exercise_template_id: z.string().min(1),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+});
+
+// Custom Exercise Template Input Schema
+const customExerciseType = z.enum([
+  'weight_reps',
+  'reps_only',
+  'bodyweight_reps',
+  'bodyweight_assisted_reps',
+  'duration',
+  'weight_duration',
+  'distance_duration',
+  'short_distance_weight',
+]);
+
+const muscleGroup = z.enum([
+  'abdominals',
+  'shoulders',
+  'biceps',
+  'triceps',
+  'forearms',
+  'quadriceps',
+  'hamstrings',
+  'calves',
+  'glutes',
+  'abductors',
+  'adductors',
+  'lats',
+  'upper_back',
+  'traps',
+  'lower_back',
+  'chest',
+  'cardio',
+  'neck',
+  'full_body',
+  'other',
+]);
+
+const equipmentCategory = z.enum([
+  'none',
+  'barbell',
+  'dumbbell',
+  'kettlebell',
+  'machine',
+  'plate',
+  'resistance_band',
+  'suspension',
+  'other',
+]);
+
+export const CreateCustomExerciseInputSchema = z.object({
+  title: sanitizedString(200, 1),
+  exercise_type: customExerciseType,
+  equipment_category: equipmentCategory,
+  muscle_group: muscleGroup,
+  other_muscles: z.array(muscleGroup).optional(),
+});
+
+// Body Measurement Schemas
+const measurementFields = {
+  weight_kg: z.number().nullable().optional(),
+  lean_mass_kg: z.number().nullable().optional(),
+  fat_percent: z.number().nullable().optional(),
+  neck_cm: z.number().nullable().optional(),
+  shoulder_cm: z.number().nullable().optional(),
+  chest_cm: z.number().nullable().optional(),
+  left_bicep_cm: z.number().nullable().optional(),
+  right_bicep_cm: z.number().nullable().optional(),
+  left_forearm_cm: z.number().nullable().optional(),
+  right_forearm_cm: z.number().nullable().optional(),
+  abdomen: z.number().nullable().optional(),
+  waist: z.number().nullable().optional(),
+  hips: z.number().nullable().optional(),
+  left_thigh: z.number().nullable().optional(),
+  right_thigh: z.number().nullable().optional(),
+  left_calf: z.number().nullable().optional(),
+  right_calf: z.number().nullable().optional(),
+};
+
+// YYYY-MM-DD
+const dateOnlyString = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
+
+export const CreateBodyMeasurementInputSchema = z.object({
+  date: dateOnlyString,
+  ...measurementFields,
+});
+
+export const UpdateBodyMeasurementInputSchema = z.object(measurementFields);
+
+export const BodyMeasurementsListParamsSchema = z.object({
+  page: z.number().int().min(1).optional(),
+  pageSize: z.number().int().min(1).max(10).optional(),
 });
 
 // Helper function to validate and parse data
