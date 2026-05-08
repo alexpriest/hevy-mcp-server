@@ -10,7 +10,13 @@ export interface HevyConfig {
 
 export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure';
 
+export interface RepRange {
+  start: number;
+  end: number;
+}
+
 export interface ExerciseSet {
+  index?: number;
   type: SetType;
   weight_kg?: number | null;
   reps?: number | null;
@@ -18,6 +24,8 @@ export interface ExerciseSet {
   duration_seconds?: number | null;
   custom_metric?: number | null;
   rpe?: number | null;
+  // Routines only — Hevy returns a planned rep_range on routine sets.
+  rep_range?: RepRange | null;
 }
 
 // ===== Workouts =====
@@ -36,6 +44,10 @@ export interface Workout {
 }
 
 export interface WorkoutExercise {
+  index?: number;
+  // Hevy returns the exercise title on workout responses; not required when
+  // creating/updating a workout (the API resolves from exercise_template_id).
+  title?: string;
   exercise_template_id: string;
   superset_id?: string | number | null;
   notes?: string;
@@ -90,6 +102,10 @@ export interface Routine {
 }
 
 export interface RoutineExercise {
+  index?: number;
+  // Hevy returns the exercise title on routine responses; not required when
+  // creating/updating a routine (the API resolves from exercise_template_id).
+  title?: string;
   exercise_template_id: string;
   superset_id?: string | number | null;
   rest_seconds?: number | null;

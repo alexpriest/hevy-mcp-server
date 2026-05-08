@@ -13,12 +13,20 @@ function capitalizeTitle(title: string | undefined | null): string {
     .join(' ');
 }
 
+// Resolve an exercise's display name. Hevy returns `title` on workout/routine
+// responses; older responses (or hand-built clients) may omit it, in which
+// case we fall back to the template ID so the user can still look it up.
+function exerciseDisplayName(exercise: { title?: string; exercise_template_id: string }): string {
+  return exercise.title || `Exercise ${exercise.exercise_template_id}`;
+}
+
 // Format workout for display
 export function formatWorkout(workout: Workout): string {
   const lines: string[] = [];
 
   const title = capitalizeTitle(workout.title) || 'Untitled Workout';
   lines.push(`# ${title}`);
+  lines.push(`**ID:** ${workout.id}`);
   if (workout.description) {
     lines.push(`${workout.description}`);
   }
@@ -34,9 +42,10 @@ export function formatWorkout(workout: Workout): string {
     lines.push('No exercises recorded.');
   } else {
     workout.exercises.forEach((exercise, idx) => {
-      lines.push(`### ${idx + 1}. Exercise ID: ${exercise.exercise_template_id}`);
-      if (exercise.superset_id) {
-        lines.push(`   *Superset ID: ${exercise.superset_id}*`);
+      lines.push(`### ${idx + 1}. ${exerciseDisplayName(exercise)}`);
+      lines.push(`   *Template ID: ${exercise.exercise_template_id}*`);
+      if (exercise.superset_id !== null && exercise.superset_id !== undefined) {
+        lines.push(`   *Superset: ${exercise.superset_id}*`);
       }
       if (exercise.notes) {
         lines.push(`   *Notes: ${exercise.notes}*`);
@@ -67,6 +76,10 @@ export function formatSet(set: ExerciseSet): string {
   }
   if (set.reps !== null && set.reps !== undefined) {
     parts.push(`${set.reps} reps`);
+  } else if (set.rep_range && (set.rep_range.start || set.rep_range.end)) {
+    // Routine sets carry a planned rep_range instead of a fixed rep count.
+    const { start, end } = set.rep_range;
+    parts.push(start === end ? `${start} reps` : `${start}-${end} reps`);
   }
   if (set.distance_meters !== null && set.distance_meters !== undefined) {
     parts.push(`${set.distance_meters}m`);
@@ -87,8 +100,12 @@ export function formatRoutine(routine: Routine): string {
 
   const title = capitalizeTitle(routine.title) || 'Untitled Routine';
   lines.push(`# ${title}`);
-  if (routine.folder_id) {
+  lines.push(`**ID:** ${routine.id}`);
+  if (routine.folder_id !== null && routine.folder_id !== undefined) {
     lines.push(`**Folder ID:** ${routine.folder_id}`);
+  }
+  if (routine.notes) {
+    lines.push(`**Notes:** ${routine.notes}`);
   }
   lines.push('');
 
@@ -99,15 +116,24 @@ export function formatRoutine(routine: Routine): string {
     lines.push('No exercises defined.');
   } else {
     routine.exercises.forEach((exercise, idx) => {
-      lines.push(`### ${idx + 1}. Exercise ID: ${exercise.exercise_template_id}`);
-      if (exercise.superset_id) {
-        lines.push(`   *Superset ID: ${exercise.superset_id}*`);
+      lines.push(`### ${idx + 1}. ${exerciseDisplayName(exercise)}`);
+      lines.push(`   *Template ID: ${exercise.exercise_template_id}*`);
+      if (exercise.superset_id !== null && exercise.superset_id !== undefined) {
+        lines.push(`   *Superset: ${exercise.superset_id}*`);
+      }
+      if (exercise.rest_seconds !== null && exercise.rest_seconds !== undefined) {
+        lines.push(`   *Rest: ${formatDuration(exercise.rest_seconds)}*`);
       }
       if (exercise.notes) {
         lines.push(`   *Notes: ${exercise.notes}*`);
       }
 
-      lines.push(`   **${exercise.sets.length} sets planned**`);
+      lines.push('   **Sets:**');
+      if (exercise.sets && Array.isArray(exercise.sets)) {
+        exercise.sets.forEach((set, setIdx) => {
+          lines.push(`   ${setIdx + 1}. ${formatSet(set)}`);
+        });
+      }
       lines.push('');
     });
   }

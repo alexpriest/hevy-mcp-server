@@ -194,7 +194,16 @@ export class HevyClient {
   }
 
   async getRoutine(id: string): Promise<Routine> {
-    return this.request<Routine>(`/v1/routines/${encodeURIComponent(id)}`);
+    // GET /v1/routines/{id} wraps its response as { routine: {...} } — the list
+    // endpoint returns the bare object inside `routines: [...]`, but the detail
+    // endpoint envelopes it. Be lenient and accept either shape.
+    const response = await this.request<{ routine?: Routine } | Routine>(
+      `/v1/routines/${encodeURIComponent(id)}`
+    );
+    if (response && typeof response === 'object' && 'routine' in response && response.routine) {
+      return response.routine;
+    }
+    return response as Routine;
   }
 
   async createRoutine(data: CreateRoutineInput): Promise<Routine> {
