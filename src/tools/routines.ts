@@ -81,6 +81,10 @@ export function getRoutineTools() {
                   type: 'string',
                   description: 'Optional superset ID to group exercises',
                 },
+                rest_seconds: {
+                  type: 'number',
+                  description: 'Rest timer for this exercise, in seconds. IMPORTANT: Hevy resets the rest timer to none if this is omitted on an update. Always include the existing rest_seconds (read it from get-routine) when editing a routine, or the timer will be wiped.',
+                },
                 notes: {
                   type: 'string',
                   description: 'Optional notes for this exercise',
@@ -164,6 +168,10 @@ export function getRoutineTools() {
                 superset_id: {
                   type: 'string',
                   description: 'Optional superset ID to group exercises',
+                },
+                rest_seconds: {
+                  type: 'number',
+                  description: 'Rest timer for this exercise, in seconds. IMPORTANT: Hevy resets the rest timer to none if this is omitted on an update. Always include the existing rest_seconds (read it from get-routine) when editing a routine, or the timer will be wiped.',
                 },
                 notes: {
                   type: 'string',
