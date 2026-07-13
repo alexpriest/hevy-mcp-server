@@ -9,10 +9,17 @@
  *   - requireBearer middleware for the resource (MCP) endpoints
  *
  * Single-tenant: anyone who knows the passcode can grant claude.ai access.
- * Tokens live in memory; a Railway redeploy invalidates them and forces re-auth.
+ *
+ * Registered clients and issued access tokens are persisted to the Railway
+ * volume (see ./persistence.ts), so a redeploy no longer forces a manual
+ * re-authorization. Short-lived `pending` approvals and auth `codes` stay
+ * in memory on purpose — they expire in 10min / 1min respectively, so a
+ * redeploy mid-handshake just means retrying the click, not losing a session.
+ * With no volume mounted, everything degrades to the old in-memory behavior.
  */
 import express, { Express, Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { loadState, saveState, type PersistedState } from './persistence.js';
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -25,7 +32,7 @@ const ACCESS_TOKEN_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year — personal-use 
 const APPROVAL_TTL_MS = 10 * 60 * 1000; // 10 min to enter the passcode
 const CODE_TTL_MS = 60 * 1000; // 1 min between authorize and token exchange
 
-class InMemoryClientsStore implements OAuthRegisteredClientsStore {
+class PersistentClientsStore implements OAuthRegisteredClientsStore {
   private clients = new Map<string, OAuthClientInformationFull>();
 
   /**
@@ -34,8 +41,17 @@ class InMemoryClientsStore implements OAuthRegisteredClientsStore {
    *   scope field, but the SDK's authorization handler validates requested
    *   scopes against `client.scope`. Without this default, every authorize
    *   request from claude.ai redirects with `invalid_scope`.
+   * @param onChange Called after any mutation so the provider can snapshot to disk.
    */
-  constructor(private readonly defaultScope?: string) {}
+  constructor(
+    private readonly defaultScope: string | undefined,
+    restored: Record<string, unknown>,
+    private readonly onChange: () => void,
+  ) {
+    for (const [clientId, client] of Object.entries(restored)) {
+      this.clients.set(clientId, client as OAuthClientInformationFull);
+    }
+  }
 
   async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
     return this.clients.get(clientId);
@@ -46,7 +62,12 @@ class InMemoryClientsStore implements OAuthRegisteredClientsStore {
       client.scope = this.defaultScope;
     }
     this.clients.set(client.client_id, client);
+    this.onChange();
     return client;
+  }
+
+  snapshot(): Record<string, OAuthClientInformationFull> {
+    return Object.fromEntries(this.clients);
   }
 }
 
@@ -70,7 +91,7 @@ interface TokenRecord {
 }
 
 class PasscodeOAuthProvider implements OAuthServerProvider {
-  readonly clientsStore: InMemoryClientsStore;
+  readonly clientsStore: PersistentClientsStore;
   private pending = new Map<string, PendingApproval>();
   private codes = new Map<string, CodeRecord>();
   private tokens = new Map<string, TokenRecord>();
@@ -80,15 +101,52 @@ class PasscodeOAuthProvider implements OAuthServerProvider {
     private readonly resourceName: string,
     defaultScope?: string,
   ) {
-    this.clientsStore = new InMemoryClientsStore(defaultScope);
+    const restored: PersistedState = loadState();
+
+    for (const [token, record] of Object.entries(restored.tokens)) {
+      this.tokens.set(token, {
+        clientId: record.clientId,
+        scopes: record.scopes,
+        expiresAt: record.expiresAt,
+        resource: record.resource ? new URL(record.resource) : undefined,
+      });
+    }
+
+    this.clientsStore = new PersistentClientsStore(defaultScope, restored.clients, () => this.persist());
     setInterval(() => this.gc(), 60_000).unref?.();
+  }
+
+  /** Snapshot clients + tokens to the volume. Cheap: this is a handful of records. */
+  private persist() {
+    saveState({
+      clients: this.clientsStore.snapshot() as PersistedState['clients'],
+      tokens: Object.fromEntries(
+        [...this.tokens].map(([token, record]) => [
+          token,
+          {
+            clientId: record.clientId,
+            scopes: record.scopes,
+            expiresAt: record.expiresAt,
+            resource: record.resource?.toString(),
+          },
+        ]),
+      ),
+    });
   }
 
   private gc() {
     const now = Date.now();
+    let expiredTokens = 0;
     for (const [k, v] of this.pending) if (v.expiresAt < now) this.pending.delete(k);
     for (const [k, v] of this.codes) if (v.expiresAt < now) this.codes.delete(k);
-    for (const [k, v] of this.tokens) if (v.expiresAt < now) this.tokens.delete(k);
+    for (const [k, v] of this.tokens) {
+      if (v.expiresAt < now) {
+        this.tokens.delete(k);
+        expiredTokens++;
+      }
+    }
+    // Only rewrite the file when a persisted record actually changed.
+    if (expiredTokens > 0) this.persist();
   }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
@@ -175,6 +233,8 @@ class PasscodeOAuthProvider implements OAuthServerProvider {
       expiresAt: Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000,
       resource: record.params.resource,
     });
+    // The load-bearing line: without this the token dies with the container.
+    this.persist();
 
     return {
       access_token: accessToken,
@@ -193,6 +253,7 @@ class PasscodeOAuthProvider implements OAuthServerProvider {
     if (!record) throw new InvalidTokenError('Invalid token');
     if (record.expiresAt < Date.now()) {
       this.tokens.delete(token);
+      this.persist();
       throw new InvalidTokenError('Token expired');
     }
     return {
