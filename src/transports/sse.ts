@@ -212,11 +212,29 @@ export async function createSSETransport(
   // Auth middleware for the MCP resource endpoints. Accepts either:
   //  1. OAuth Bearer token issued by our /token endpoint (claude.ai flow), OR
   //  2. The legacy static AUTH_TOKEN (existing local Claude Code config).
-  // If neither AUTH_TOKEN nor MCP_OAUTH_PASSCODE is configured, the endpoint
-  // is open (matches the original unprotected behavior).
+  // FAILS CLOSED. This previously fell through to next() when neither
+  // AUTH_TOKEN nor MCP_OAUTH_PASSCODE was configured, serving the endpoint to
+  // any unauthenticated caller. Observed live on 2026-07-26 when a fresh deploy
+  // copied from this template came up with no auth env vars and returned its
+  // full tool list over the public internet. A misconfigured deploy must be
+  // inert, never open.
   const authConfigured = !!config.authToken || !!requireOAuthBearer;
+  if (!authConfigured) {
+    logger.warn(
+      'No auth configured (AUTH_TOKEN and MCP_OAUTH_PASSCODE both unset) — ' +
+        'the MCP endpoint will refuse every request until one is set',
+    );
+  }
   const authResource: RequestHandler = (req, res, next) => {
-    if (!authConfigured) return next();
+    if (!authConfigured) {
+      logger.authFailure('no_auth_configured', req.ip);
+      res.status(503).json({
+        error: 'server_misconfigured',
+        error_description:
+          'No authentication is configured on this deployment. Set AUTH_TOKEN or MCP_OAUTH_PASSCODE.',
+      });
+      return;
+    }
     authLimiter(req, res, () => {
       const authHeader = req.headers.authorization;
       const token = authHeader?.replace(/^Bearer\s+/i, '');
